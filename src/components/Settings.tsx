@@ -5,15 +5,19 @@ import type { User } from '@/lib/auth';
 import Nav from './Nav';
 
 type Status = {
+  database: { ok: boolean; error?: string };
   evolution: {
     configured: boolean;
     url: string | null;
     instance: string | null;
     keySet: boolean;
-    connection: { state: string; error?: string };
+    connection: { state: string; loggedIn?: boolean; name?: string; error?: string };
     webhook: unknown;
     lastWebhookState: string;
     lastWebhookStateAt: string;
+    lastWebhookEvent: string;
+    lastWebhookAt: string;
+    lastWebhookPayload: string;
   };
   bot: {
     enabled: boolean;
@@ -190,6 +194,15 @@ export default function Settings({ user }: { user: User }) {
           {ok && <div className="notice ok">{ok}</div>}
 
           {/* ── connection ─────────────────────────────── */}
+          {status && !status.database.ok && (
+            <div className="notice err">
+              <strong>Database unreachable.</strong> {status.database.error}
+              <br />
+              Check <code>DATABASE_URL</code> — use the pooled Neon string and keep{' '}
+              <code>?sslmode=require</code>.
+            </div>
+          )}
+
           <div className="panel">
             <h3>WhatsApp connection</h3>
             <p className="hint">Evolution API is the bridge between WhatsApp and this app.</p>
@@ -209,6 +222,13 @@ export default function Settings({ user }: { user: User }) {
               <div className="stat">
                 <b>{status?.bot.enabled ? 'On' : 'Off'}</b>
                 <span>Auto-reply {status?.bot.insideWorkingHours ? '· inside hours' : '· outside hours'}</span>
+              </div>
+              <div className="stat">
+                <b>
+                  <span className={`dot ${status?.database.ok ? 'on' : 'off'}`} />{' '}
+                  {status?.database.ok ? 'Neon ok' : 'Neon down'}
+                </b>
+                <span>Postgres database</span>
               </div>
             </div>
 
@@ -233,6 +253,11 @@ export default function Settings({ user }: { user: User }) {
                 )}
               </dd>
               <dt>Last webhook event</dt>
+              <dd>
+                {status?.evolution.lastWebhookEvent || 'nothing yet'}
+                {status?.evolution.lastWebhookAt ? ` · ${status.evolution.lastWebhookAt}` : ''}
+              </dd>
+              <dt>Connection state</dt>
               <dd>
                 {status?.evolution.lastWebhookState}
                 {status?.evolution.lastWebhookStateAt ? ` · ${status.evolution.lastWebhookStateAt}` : ''}

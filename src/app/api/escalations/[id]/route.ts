@@ -12,18 +12,18 @@ export async function POST(_req: Request, { params }: Ctx) {
     const user = await requireUser();
     const id = Number((await params).id);
     if (!Number.isInteger(id) || id <= 0) throw bad('Bad escalation id');
-    const row = get<{ id: number; lead_id: number; trigger_no: number }>(
+    const row = await get<{ id: number; lead_id: number; trigger_no: number }>(
       'SELECT id, lead_id, trigger_no FROM escalations WHERE id = ?',
       id,
     );
     if (!row) throw bad('Escalation not found', 404);
 
-    run(
-      "UPDATE escalations SET resolved = 1, resolved_by = ?, resolved_at = datetime('now') WHERE id = ?",
+    await run(
+      'UPDATE escalations SET resolved = 1, resolved_by = ?, resolved_at = now() WHERE id = ?',
       user.id,
       id,
     );
-    logActivity(row.lead_id, user.id, 'escalation.resolved', `trigger ${row.trigger_no}`);
+    await logActivity(row.lead_id, user.id, 'escalation.resolved', `trigger ${row.trigger_no}`);
     return { ok: true };
   });
 }

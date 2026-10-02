@@ -28,7 +28,7 @@ export async function POST(req: Request) {
 
     try {
       const result = await setWebhook(target);
-      logActivity(null, user.id, 'webhook.set', target.replace(token, '***'));
+      await logActivity(null, user.id, 'webhook.set', target.replace(token, '***'));
       return { ok: true, target, result };
     } catch (e) {
       throw bad(`Evolution refused the webhook: ${e instanceof Error ? e.message : String(e)}`, 502);

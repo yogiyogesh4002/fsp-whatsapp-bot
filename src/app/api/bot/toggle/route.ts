@@ -10,14 +10,14 @@ export async function POST(req: Request) {
     const user = await requireAdmin();
     const { enabled } = await body<{ enabled?: boolean }>(req);
     const next = enabled ? 'true' : 'false';
-    putSetting('bot_enabled', next);
-    logActivity(null, user.id, 'bot.toggle', next === 'true' ? 'auto-reply on' : 'auto-reply off');
+    await putSetting('bot_enabled', next);
+    await logActivity(null, user.id, 'bot.toggle', next === 'true' ? 'auto-reply on' : 'auto-reply off');
     return { ok: true, enabled: next === 'true' };
   });
 }
 
 export async function GET() {
   return handle(async () => ({
-    enabled: setting('bot_enabled', process.env.BOT_ENABLED === 'false' ? 'false' : 'true') !== 'false',
+    enabled: (await setting('bot_enabled', process.env.BOT_ENABLED === 'false' ? 'false' : 'true')) !== 'false',
   }));
 }

@@ -1,8 +1,15 @@
-import { all, get, run, logActivity, setting, type Stage } from './db';
+import { all, get, run, insert, logActivity, setting, type Stage } from './db';
 import { decide, type EngineLead, type MessageKind } from './bot/engine';
 import { normalize } from './bot/text';
 import { guardOutbound, describeVerdict } from './bot/guard';
-import { sendText, sendPresence, markRead, isIgnorableJid, evoConfigured, type InboundMessage } from './evolution';
+import {
+  sendText,
+  sendPresence,
+  markRead,
+  isIgnorableJid,
+  evoConfigured,
+  type InboundMessage,
+} from './evolution';
 import type { Lang } from './bot/language';
 
 export type LeadRow = {
@@ -33,18 +40,29 @@ export type LeadRow = {
   last_bot_reply_at: string | null;
   followup_sent_at: string | null;
   close_reason: string | null;
-  expecting?: string | null;
+  expecting: string | null;
 };
 
 export type HandleResult = {
-  status: 'ignored-group' | 'ignored-self' | 'duplicate' | 'handled' | 'silent' | 'blocked' | 'error';
+  status:
+    | 'ignored-group'
+    | 'ignored-self'
+    | 'duplicate'
+    | 'handled'
+    | 'silent'
+    | 'blocked'
+    | 'error';
   leadId?: number;
   reason: string;
   replies?: string[];
 };
 
-function botEnabled(): boolean {
-  return setting('bot_enabled', process.env.BOT_ENABLED === 'false' ? 'false' : 'true') !== 'false';
+async function botEnabled(): Promise<boolean> {
+  const stored = await setting(
+    'bot_enabled',
+    process.env.BOT_ENABLED === 'false' ? 'false' : 'true',
+  );
+  return stored !== 'false';
 }
 
 function num(name: string, fallback: number): number {
@@ -62,38 +80,45 @@ export function insideWorkingHours(now = new Date()): boolean {
   return hour >= startH && hour < endH;
 }
 
-function upsertLead(msg: InboundMessage): LeadRow {
-  const existing = get<LeadRow>('SELECT * FROM leads WHERE jid = ?', msg.jid);
+async function upsertLead(msg: InboundMessage): Promise<LeadRow> {
+  const existing = await get<LeadRow>('SELECT * FROM leads WHERE jid = ?', msg.jid);
   if (existing) {
     if (msg.pushName && msg.pushName !== existing.push_name) {
-      run('UPDATE leads SET push_name = ? WHERE id = ?', msg.pushName, existing.id);
+      await run('UPDATE leads SET push_name = ? WHERE id = ?', msg.pushName, existing.id);
       existing.push_name = msg.pushName;
     }
     return existing;
   }
-  const order = (get<{ m: number }>("SELECT COALESCE(MIN(board_order), 0) AS m FROM leads WHERE stage = 'new'")?.m ?? 0) - 1;
-  const res = run(
-    'INSERT INTO leads (jid, phone, push_name, board_order) VALUES (?, ?, ?, ?)',
+
+  const lowest = await get<{ m: number | string | null }>(
+    "SELECT COALESCE(MIN(board_order), 0) AS m FROM leads WHERE stage = 'new'",
+  );
+  const order = Number(lowest?.m ?? 0) - 1;
+
+  // Two webhook deliveries for a brand-new contact can race; the unique index
+  // on jid decides the winner and the loser re-reads the row.
+  const id = await insert(
+    `INSERT INTO leads (jid, phone, push_name, board_order) VALUES (?, ?, ?, ?)
+       ON CONFLICT (jid) DO UPDATE SET push_name = COALESCE(leads.push_name, excluded.push_name)
+     RETURNING id`,
     msg.jid,
     msg.phone,
     msg.pushName ?? null,
     order,
   );
-  const lead = get<LeadRow>('SELECT * FROM leads WHERE id = ?', Number(res.lastInsertRowid))!;
-  logActivity(lead.id, null, 'lead.created', `${msg.phone} first message`);
+  const lead = (await get<LeadRow>('SELECT * FROM leads WHERE id = ?', id))!;
+  await logActivity(lead.id, null, 'lead.created', `${msg.phone} first message`);
   return lead;
 }
 
-function engineLead(lead: LeadRow): EngineLead {
-  const triggers = all<{ trigger_no: number }>(
-    'SELECT DISTINCT trigger_no FROM escalations WHERE lead_id = ?',
-    lead.id,
-  ).map((r) => r.trigger_no);
-
-  const recent = all<{ body: string }>(
-    "SELECT body FROM messages WHERE lead_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 6",
-    lead.id,
-  ).map((r) => normalize(r.body));
+async function engineLead(lead: LeadRow): Promise<EngineLead> {
+  const [triggerRows, recentRows] = await Promise.all([
+    all<{ trigger_no: number }>('SELECT DISTINCT trigger_no FROM escalations WHERE lead_id = ?', lead.id),
+    all<{ body: string }>(
+      "SELECT body FROM messages WHERE lead_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 6",
+      lead.id,
+    ),
+  ]);
 
   return {
     name: lead.name,
@@ -107,9 +132,31 @@ function engineLead(lead: LeadRow): EngineLead {
     profession: lead.profession,
     msgCount: lead.msg_count,
     expecting: lead.expecting ?? null,
-    escalatedTriggers: triggers,
-    recentInbound: recent,
+    escalatedTriggers: triggerRows.map((r) => Number(r.trigger_no)),
+    recentInbound: recentRows.map((r) => normalize(r.body)),
   };
+}
+
+async function recordOutbound(
+  leadId: number,
+  body: string,
+  intent: string | null,
+  triggerNo: number | null,
+  status: 'sent' | 'skipped' | 'failed',
+  waMessageId: string | null,
+  error: string | null,
+): Promise<void> {
+  await run(
+    `INSERT INTO messages (lead_id, direction, author, kind, body, intent, trigger_no, wa_message_id, status, error)
+     VALUES (?, 'out', 'bot', 'text', ?, ?, ?, ?, ?, ?)`,
+    leadId,
+    body,
+    intent,
+    triggerNo,
+    waMessageId,
+    status,
+    error,
+  );
 }
 
 /** The whole inbound pipeline for one WhatsApp message. */
@@ -128,15 +175,18 @@ export async function handleInbound(
     };
   }
 
-  const lead = upsertLead(msg);
+  const lead = await upsertLead(msg);
 
   /* ── dedupe ──────────────────────────────────────────────── */
   if (msg.waMessageId) {
-    const seen = get<{ id: number }>('SELECT id FROM messages WHERE wa_message_id = ?', msg.waMessageId);
+    const seen = await get<{ id: number }>(
+      'SELECT id FROM messages WHERE wa_message_id = ?',
+      msg.waMessageId,
+    );
     if (seen) return { status: 'duplicate', leadId: lead.id, reason: 'webhook replay' };
   }
 
-  run(
+  await run(
     `INSERT INTO messages (lead_id, direction, author, kind, body, wa_message_id)
      VALUES (?, 'in', 'customer', ?, ?, ?)`,
     lead.id,
@@ -144,18 +194,17 @@ export async function handleInbound(
     msg.text,
     msg.waMessageId,
   );
-  run(
+  await run(
     `UPDATE leads
        SET msg_count = msg_count + 1,
            unread = unread + 1,
-           last_message_at = datetime('now'),
-           last_inbound_at = datetime('now')
+           last_message_at = now(),
+           last_inbound_at = now()
      WHERE id = ?`,
     lead.id,
   );
 
-  const expecting = setting(`expecting:${lead.id}`, '');
-  const decision = decide(msg.text, msg.kind as MessageKind, { ...engineLead(lead), expecting: expecting || null }, {
+  const decision = decide(msg.text, msg.kind as MessageKind, await engineLead(lead), {
     site: process.env.FSP_WEBSITE_URL || 'https://fsp-beta.vercel.app/',
     outsideHours: !insideWorkingHours(),
   });
@@ -186,49 +235,50 @@ export async function handleInbound(
   }
   if (decision.markGreeted && !lead.greeted) sets.push('greeted = 1');
   if (decision.stopReplying) sets.push('stop_replying = 1');
-  if (sets.length) {
-    run(`UPDATE leads SET ${sets.join(', ')} WHERE id = ?`, ...vals, lead.id);
-  }
-  if (decision.stage && decision.stage !== lead.stage) {
-    logActivity(lead.id, null, 'stage.auto', `${lead.stage} → ${decision.stage} (bot)`);
-  }
 
-  // Remember what the bot's closing question was collecting.
-  run(
-    `INSERT INTO settings (key, value) VALUES (?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    `expecting:${lead.id}`,
-    decision.expecting ?? '',
-  );
+  // What the bot's closing question was collecting, for the next message.
+  sets.push('expecting = ?');
+  vals.push(decision.expecting ?? null);
+
+  await run(`UPDATE leads SET ${sets.join(', ')} WHERE id = ?`, ...vals, lead.id);
+
+  if (decision.stage && decision.stage !== lead.stage) {
+    await logActivity(lead.id, null, 'stage.auto', `${lead.stage} → ${decision.stage} (bot)`);
+  }
 
   /* ── file the escalation ─────────────────────────────────── */
   if (decision.triggerNo) {
-    const alreadyOpen = get<{ id: number }>(
+    const alreadyOpen = await get<{ id: number }>(
       'SELECT id FROM escalations WHERE lead_id = ? AND trigger_no = ? AND resolved = 0',
       lead.id,
       decision.triggerNo,
     );
     if (!alreadyOpen) {
-      run(
+      await run(
         'INSERT INTO escalations (lead_id, trigger_no, topic, inbound_text) VALUES (?, ?, ?, ?)',
         lead.id,
         decision.triggerNo,
         decision.topic ?? `Trigger ${decision.triggerNo}`,
         msg.text.slice(0, 500),
       );
-      logActivity(lead.id, null, 'escalation', `trigger ${decision.triggerNo} — ${decision.topic ?? ''}`);
+      await logActivity(
+        lead.id,
+        null,
+        'escalation',
+        `trigger ${decision.triggerNo} — ${decision.topic ?? ''}`,
+      );
     }
   }
 
   /* ── the guard refused the draft ─────────────────────────── */
   if (decision.blocked) {
-    run(
+    await run(
       'INSERT INTO blocked_outbound (lead_id, draft, pattern) VALUES (?, ?, ?)',
       lead.id,
       decision.blocked.draft,
       decision.blocked.pattern,
     );
-    logActivity(lead.id, null, 'outbound.blocked', decision.blocked.pattern);
+    await logActivity(lead.id, null, 'outbound.blocked', decision.blocked.pattern);
     return { status: 'blocked', leadId: lead.id, reason: decision.reason };
   }
 
@@ -246,40 +296,43 @@ export async function handleInbound(
     };
   }
 
-  if (!botEnabled()) {
+  if (!(await botEnabled())) {
     for (const body of decision.replies) {
-      run(
-        `INSERT INTO messages (lead_id, direction, author, kind, body, intent, trigger_no, status, error)
-         VALUES (?, 'out', 'bot', 'text', ?, ?, ?, 'skipped', 'BOT_ENABLED=false — reply was not sent')`,
+      await recordOutbound(
         lead.id,
         body,
         decision.intent,
         decision.triggerNo,
+        'skipped',
+        null,
+        'Auto-reply is switched off — this reply was drafted, not sent',
       );
     }
     return {
       status: 'silent',
       leadId: lead.id,
-      reason: `bot is switched off — drafted ${decision.replies.length} reply(ies) without sending`,
+      reason: `auto-reply is off — drafted ${decision.replies.length} reply(ies) without sending`,
       replies: decision.replies,
     };
   }
 
   if (!evoConfigured()) {
     for (const body of decision.replies) {
-      run(
-        `INSERT INTO messages (lead_id, direction, author, kind, body, intent, trigger_no, status, error)
-         VALUES (?, 'out', 'bot', 'text', ?, ?, ?, 'failed', 'Evolution API is not configured')`,
+      await recordOutbound(
         lead.id,
         body,
         decision.intent,
         decision.triggerNo,
+        'failed',
+        null,
+        'Evolution GO is not configured',
       );
     }
     return {
       status: 'error',
       leadId: lead.id,
-      reason: 'Evolution API is not configured — set EVOLUTION_API_URL, EVOLUTION_API_KEY and EVOLUTION_INSTANCE',
+      reason:
+        'Evolution GO is not configured — set EVOLUTION_API_URL, EVOLUTION_API_KEY and EVOLUTION_INSTANCE',
       replies: decision.replies,
     };
   }
@@ -293,31 +346,31 @@ export async function handleInbound(
   for (const body of decision.replies) {
     try {
       const sent = await sendText(msg.jid, body, { delayMs: delay });
-      run(
-        `INSERT INTO messages (lead_id, direction, author, kind, body, intent, trigger_no, wa_message_id, status)
-         VALUES (?, 'out', 'bot', 'text', ?, ?, ?, ?, 'sent')`,
+      await recordOutbound(
         lead.id,
         body,
         decision.intent,
         decision.triggerNo,
+        'sent',
         sent.id ?? null,
+        null,
       );
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      run(
-        `INSERT INTO messages (lead_id, direction, author, kind, body, intent, trigger_no, status, error)
-         VALUES (?, 'out', 'bot', 'text', ?, ?, ?, 'failed', ?)`,
+      await recordOutbound(
         lead.id,
         body,
         decision.intent,
         decision.triggerNo,
+        'failed',
+        null,
         message,
       );
       return { status: 'error', leadId: lead.id, reason: `send failed: ${message}` };
     }
   }
 
-  run("UPDATE leads SET last_bot_reply_at = datetime('now'), last_message_at = datetime('now') WHERE id = ?", lead.id);
+  await run('UPDATE leads SET last_bot_reply_at = now(), last_message_at = now() WHERE id = ?', lead.id);
   return { status: 'handled', leadId: lead.id, reason: decision.reason, replies: decision.replies };
 }
 
@@ -329,7 +382,7 @@ export async function sendManual(
   userId: number,
   opts: { override?: boolean } = {},
 ): Promise<{ ok: true } | { ok: false; error: string; blocked?: string }> {
-  const lead = get<LeadRow>('SELECT * FROM leads WHERE id = ?', leadId);
+  const lead = await get<LeadRow>('SELECT * FROM leads WHERE id = ?', leadId);
   if (!lead) return { ok: false, error: 'Lead not found' };
   const text = body.trim();
   if (!text) return { ok: false, error: 'Message is empty' };
@@ -337,13 +390,13 @@ export async function sendManual(
   // A human typing in the dashboard is still held to the payment rule.
   const verdict = guardOutbound(text, { trusted: false });
   if (!verdict.ok && !(opts.override && verdict.severity === 'soft')) {
-    run(
+    await run(
       'INSERT INTO blocked_outbound (lead_id, draft, pattern) VALUES (?, ?, ?)',
       leadId,
       text,
       `manual · ${describeVerdict(verdict)}`,
     );
-    logActivity(leadId, userId, 'outbound.blocked', `manual · ${describeVerdict(verdict)}`);
+    await logActivity(leadId, userId, 'outbound.blocked', `manual · ${describeVerdict(verdict)}`);
     return {
       ok: false,
       error:
@@ -354,11 +407,11 @@ export async function sendManual(
     };
   }
 
-  if (!evoConfigured()) return { ok: false, error: 'Evolution API is not configured' };
+  if (!evoConfigured()) return { ok: false, error: 'Evolution GO is not configured' };
 
   try {
     const sent = await sendText(lead.jid, text);
-    run(
+    await run(
       `INSERT INTO messages (lead_id, direction, author, kind, body, wa_message_id, status, sent_by_user_id)
        VALUES (?, 'out', 'agent', 'text', ?, ?, 'sent', ?)`,
       leadId,
@@ -366,12 +419,15 @@ export async function sendManual(
       sent.id ?? null,
       userId,
     );
-    run("UPDATE leads SET last_message_at = datetime('now'), unread = 0, bot_paused = 1 WHERE id = ?", leadId);
-    logActivity(leadId, userId, 'message.sent', text.slice(0, 120));
+    await run(
+      'UPDATE leads SET last_message_at = now(), unread = 0, bot_paused = 1 WHERE id = ?',
+      leadId,
+    );
+    await logActivity(leadId, userId, 'message.sent', text.slice(0, 120));
     return { ok: true };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    run(
+    await run(
       `INSERT INTO messages (lead_id, direction, author, kind, body, status, error, sent_by_user_id)
        VALUES (?, 'out', 'agent', 'text', ?, 'failed', ?, ?)`,
       leadId,
@@ -384,17 +440,22 @@ export async function sendManual(
 }
 
 /** Section 5 — the internal lead summary the team gets. */
-export function leadSummary(leadId: number): string {
-  const lead = get<LeadRow>('SELECT * FROM leads WHERE id = ?', leadId);
+export async function leadSummary(leadId: number): Promise<string> {
+  const lead = await get<LeadRow>('SELECT * FROM leads WHERE id = ?', leadId);
   if (!lead) return '';
-  const esc = get<{ trigger_no: number; topic: string }>(
-    'SELECT trigger_no, topic FROM escalations WHERE lead_id = ? ORDER BY id DESC LIMIT 1',
-    leadId,
-  );
-  const lastTwo = all<{ direction: string; body: string }>(
-    "SELECT direction, body FROM messages WHERE lead_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 2",
-    leadId,
-  )
+
+  const [esc, inbound] = await Promise.all([
+    get<{ trigger_no: number; topic: string }>(
+      'SELECT trigger_no, topic FROM escalations WHERE lead_id = ? ORDER BY id DESC LIMIT 1',
+      leadId,
+    ),
+    all<{ body: string }>(
+      "SELECT body FROM messages WHERE lead_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 2",
+      leadId,
+    ),
+  ]);
+
+  const lastTwo = inbound
     .reverse()
     .map((m) => `  ${m.body.slice(0, 90)}`)
     .join('\n');

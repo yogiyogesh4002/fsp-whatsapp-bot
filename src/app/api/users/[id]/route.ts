@@ -23,7 +23,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
     const selfOnly = id === me.id && !('role' in patch) && !('active' in patch);
     if (!selfOnly) await requireAdmin();
 
-    const target = get<{ id: number; email: string; role: string }>(
+    const target = await get<{ id: number; email: string; role: string }>(
       'SELECT id, email, role FROM users WHERE id = ?',
       id,
     );
@@ -48,8 +48,9 @@ export async function PATCH(req: Request, { params }: Ctx) {
     }
     if ('active' in patch) {
       if (id === me.id && !patch.active) throw bad('You cannot deactivate your own account');
-      const activeAdmins =
-        get<{ n: number }>("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1")?.n ?? 0;
+      const activeAdmins = Number(
+        (await get<{ n: number }>("SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin' AND active = 1"))?.n ?? 0,
+      );
       if (!patch.active && target.role === 'admin' && activeAdmins <= 1) {
         throw bad('That is the last active admin — promote someone else first');
       }
@@ -58,8 +59,8 @@ export async function PATCH(req: Request, { params }: Ctx) {
     }
 
     if (!sets.length) throw bad('Nothing to update');
-    run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, ...vals, id);
-    logActivity(null, me.id, 'user.updated', `${target.email}: ${Object.keys(patch).join(', ')}`);
+    await run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, ...vals, id);
+    await logActivity(null, me.id, 'user.updated', `${target.email}: ${Object.keys(patch).join(', ')}`);
     return { ok: true };
   });
 }

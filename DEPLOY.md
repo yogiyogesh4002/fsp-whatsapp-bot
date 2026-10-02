@@ -1,189 +1,348 @@
-# Deploying the FSP bot to Railway
+# Deploying the FSP bot — Neon + Vercel
 
-Written for whoever runs the deploy — you, or a developer helping you.
+Written for you, doing this for the first time. Follow it top to bottom; nothing
+is assumed.
 
-The bot has to be reachable from the public internet, because your Evolution GO
-server (on Railway) is the thing that calls it. Running it on a laptop does not
-work: Railway cannot reach `localhost`.
+You need three accounts, all free to start: **Neon** (the database),
+**GitHub** (to hold the code), **Vercel** (to run it). Your Evolution GO server
+on Railway stays exactly as it is.
 
-Your Evolution GO instance is already connected, so nothing about WhatsApp
-pairing changes here.
+Roughly 25 minutes.
 
 ---
 
-## 1. Put the code in a git repository
+## Why a database at all?
 
-A repo already exists locally. Push it to GitHub:
+Vercel has no permanent disk. Anything written to a file disappears the moment
+the function finishes. Leads, chats and your team's accounts have to live
+somewhere that persists — that is Neon, a hosted Postgres.
+
+---
+
+# PART 1 — Neon (the database)
+
+### Step 1.1 — Create the project
+
+1. Go to **https://neon.com** and sign up (GitHub login is quickest).
+2. Click **New Project**.
+3. Fill in:
+   - **Name:** `fsp-whatsapp-bot`
+   - **Postgres version:** leave the default
+   - **Region:** **Asia Pacific (Singapore)** — `ap-southeast-1`. Closest to
+     India, so the dashboard feels fast.
+4. Click **Create project**.
+
+### Step 1.2 — Copy the connection string
+
+Neon shows a **Connection string** box right after creating the project. If you
+navigate away: **Dashboard → Connect** (or **Connection Details**).
+
+Two things matter:
+
+- Make sure the **Connection pooling** toggle is **ON**. The host then contains
+  `-pooler`. Vercel opens and closes a lot of short connections, and the pooled
+  endpoint is built for that. Without it you will hit connection limits.
+- Copy the whole string, starting `postgresql://`.
+
+It looks like this:
+
+```
+postgresql://neondb_owner:npg_AbC123xyz@ep-cool-name-a1b2c3-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+```
+
+Check it has **`-pooler`** in it and ends with **`?sslmode=require`**.
+
+> This string is a password. Do not paste it into chat, a screenshot, or a
+> GitHub file.
+
+### Step 1.3 — Put it in your local config
+
+Open `.env.local` in this project. Find the last line:
+
+```ini
+DATABASE_URL=
+```
+
+Paste your string after the `=`, no quotes, no spaces:
+
+```ini
+DATABASE_URL=postgresql://neondb_owner:npg_...@ep-...-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+```
+
+Save it. `.env.local` is gitignored, so this never reaches GitHub.
+
+### Step 1.4 — Create the tables
+
+In this folder, run:
 
 ```bash
-git remote add origin https://github.com/<you>/fsp-whatsapp-bot.git
+npm run db:migrate
+```
+
+You want to see:
+
+```
+  Neon : ep-...-pooler.ap-southeast-1.aws.neon.tech
+
+  + connected — PostgreSQL 17.x
+  + schema applied (19 statements)
+    activity           5 columns
+    blocked_outbound   5 columns
+    escalations        9 columns
+    leads             27 columns
+    messages          13 columns
+    notes              5 columns
+    settings           2 columns
+    users              8 columns
+
+  No accounts yet — open the app and create the first admin.
+```
+
+Eight tables. If you get `cannot connect`, go back to step 1.2 — nearly always
+a missing `-pooler` or a truncated paste.
+
+### Step 1.5 — Try it locally
+
+```bash
+npm run build
+npm start
+```
+
+Open **http://localhost:3100**. It asks you to create the first admin account —
+do that. You land on the empty lead board, and **Settings** shows a green
+**Neon ok**.
+
+That confirms the database works before Vercel is involved at all.
+
+---
+
+# PART 2 — GitHub
+
+Vercel deploys from a repository. The code is already committed locally.
+
+### Step 2.1 — Make an empty repo
+
+1. Go to **https://github.com/new**.
+2. **Repository name:** `fsp-whatsapp-bot`
+3. Choose **Private**.
+4. Do **not** tick "Add a README" or any `.gitignore` — the repo must start
+   empty.
+5. **Create repository**.
+
+### Step 2.2 — Push
+
+Copy the URL GitHub shows you, then:
+
+```bash
+git remote add origin https://github.com/YOUR-USERNAME/fsp-whatsapp-bot.git
 git branch -M main
 git push -u origin main
 ```
 
-`.env.local` is gitignored, so **no secrets are pushed**. You set them on
-Railway in step 3.
+Refresh GitHub — you should see the files. **Check that `.env.local` is not
+there.** It should not be; if it is, stop and tell me.
 
 ---
 
-## 2. Create the service
+# PART 3 — Vercel
 
-In your Railway project (the same one as Evolution GO, so they share a private
-network):
+### Step 3.1 — Import the repo
 
-1. **New → GitHub Repo →** pick this repo.
-2. Railway reads `railway.json` and builds from the `Dockerfile`. No build
-   command to configure.
-3. **Settings → Networking → Generate Domain.** Note the URL, e.g.
-   `https://fsp-bot-production-xxxx.up.railway.app`.
+1. Go to **https://vercel.com** and sign in with GitHub.
+2. **Add New → Project**.
+3. Find `fsp-whatsapp-bot` and click **Import**.
+4. Vercel detects Next.js by itself. Change nothing about the build settings.
 
----
+### Step 3.2 — Add the environment variables
 
-## 3. Add a volume, so leads survive a redeploy
+**Before** clicking Deploy, expand **Environment Variables**. Add each of these.
+Copy the four secret values from your own `.env.local` — do not retype them.
 
-The database is a single SQLite file. Without a volume it is wiped on every
-deploy.
+| Name | Value |
+|---|---|
+| `DATABASE_URL` | your Neon pooled string (from step 1.2) |
+| `EVOLUTION_API_URL` | `https://evolution-go-production-8912.up.railway.app` |
+| `EVOLUTION_API_KEY` | the Evolution GO **global** api key, from `.env.local` |
+| `EVOLUTION_INSTANCE` | `keypurpose` |
+| `WEBHOOK_TOKEN` | copy from `.env.local` |
+| `SESSION_SECRET` | copy from `.env.local` |
+| `BOT_ENABLED` | `false` |
+| `FSP_WEBSITE_URL` | `https://fsp-beta.vercel.app/` |
+| `BOT_WORKING_HOURS` | `Mon-Sat, 10am - 7pm IST` |
+| `BOT_TZ_OFFSET_MINUTES` | `330` |
+| `BOT_HOURS_START` | `10` |
+| `BOT_HOURS_END` | `19` |
+| `BOT_REPLY_DELAY_MS` | `1200` |
+| `BOT_SEND_PRESENCE` | `true` |
 
-**Settings → Volumes → New Volume**, mount path exactly:
+Notes:
+
+- `BOT_ENABLED=false` is deliberate. The bot will receive messages and draft
+  replies but send nothing until you flip it. Part 5.
+- Copy `WEBHOOK_TOKEN` and `SESSION_SECRET` exactly. New values would break the
+  webhook and sign everyone out.
+- Do **not** set `PORT`. Vercel handles it.
+
+### Step 3.3 — Deploy
+
+Click **Deploy** and wait a couple of minutes. When it finishes you get a URL
+like:
 
 ```
-/data
+https://fsp-whatsapp-bot.vercel.app
 ```
 
-The image already defaults `DB_PATH=/data/fsp.db`.
+Open it. You should see the login page. Sign in with the admin account you made
+in step 1.5 — it is the same Neon database, so the account is already there.
+
+Go to **Settings** and check:
+
+- **Neon ok** — green
+- **connected: open** and the instance `keypurpose`
+- **webhook** — still empty. That is Part 4.
 
 ---
 
-## 4. Set the environment variables
+# PART 4 — Connect WhatsApp to it
 
-**Variables → Raw Editor**, paste this and fill in the blanks:
+This is the step that makes messages actually arrive. Until now, nothing reaches
+the bot.
 
-```ini
-EVOLUTION_API_URL=https://evolution-go-production-8912.up.railway.app
-EVOLUTION_API_KEY=<your Evolution GO global api key>
-EVOLUTION_INSTANCE=keypurpose
+### Step 4.1 — Register the webhook
 
-WEBHOOK_TOKEN=<copy from your local .env.local>
-SESSION_SECRET=<copy from your local .env.local>
+Easiest from the dashboard: **Settings → Public base URL of this app** → paste
+your Vercel URL → click **Register webhook on Evolution**.
 
-# Start silent: messages are received, leads appear, replies are drafted and
-# shown marked "not sent", but nothing goes out. Flip to true when you are
-# happy with what it would have said.
-BOT_ENABLED=false
-
-FSP_WEBSITE_URL=https://fsp-beta.vercel.app/
-BOT_WORKING_HOURS=Mon-Sat, 10am - 7pm IST
-BOT_TZ_OFFSET_MINUTES=330
-BOT_HOURS_START=10
-BOT_HOURS_END=19
-BOT_REPLY_DELAY_MS=1200
-BOT_SEND_PRESENCE=true
-
-DB_PATH=/data/fsp.db
-NODE_ENV=production
-```
-
-Copy `WEBHOOK_TOKEN` and `SESSION_SECRET` from your local `.env.local` — they
-are already generated. Do not invent new ones unless you want everyone signed
-out.
-
-Do **not** set `PORT`; Railway injects it.
-
----
-
-## 5. Create your account
-
-Open the Railway URL. The first visit asks you to create the admin account.
-Add the rest of the team from **Settings → Team**.
-
----
-
-## 6. Point WhatsApp at it
-
-Two ways — either is fine.
-
-**From the dashboard:** Settings → paste the Railway URL into *Public base URL*
-→ **Register webhook on Evolution**.
-
-**Or from your machine:**
+Or from this folder:
 
 ```bash
-npm run connect -- set https://fsp-bot-production-xxxx.up.railway.app
+npm run connect -- set https://fsp-whatsapp-bot.vercel.app
 ```
 
-Then confirm:
+(Use your real Vercel URL.)
+
+### Step 4.2 — Confirm
 
 ```bash
 npm run connect
 ```
 
-You want to see the webhook line pointing at `/api/webhook/evolution` and
-`events: MESSAGE`.
+You want:
+
+```
+  + connected  : true
+  + logged in  : true
+  . number       : +918680895851
+  . webhook      : https://fsp-whatsapp-bot.vercel.app/api/webhook/evolution?token=***
+  . events       : MESSAGE
+```
+
+The webhook line must point at **your Vercel URL** and end in
+`/api/webhook/evolution`.
+
+### Step 4.3 — Send a real test
+
+From **your own phone**, WhatsApp the FSP number **+91 86808 95851**:
+
+> What is FSP?
+
+Within a few seconds, on the lead board:
+
+- a new card appears in **New** with your name;
+- open it, and the Chat tab shows your message and the bot's drafted reply,
+  marked **not sent**.
+
+You will get nothing on your phone — correct, auto-reply is still off.
+
+That proves the whole chain: WhatsApp → Evolution GO → Vercel → Neon → the board.
+
+If no card appears, see Troubleshooting.
 
 ---
 
-## 7. Watch it silently for a while
+# PART 5 — Switch auto-reply on
 
-With `BOT_ENABLED=false`, send a message to the FSP number from your own phone.
-You should see:
+Do this once you have read some drafts and are happy with them. I suggest
+sending it a handful of messages first — a fee question, a batch-date question,
+"what is FSP" — and reading what it would have said.
 
-- the lead appear in the **New** column within a few seconds;
-- the drafted reply in the chat thread, marked **not sent**.
+**To go live:** sign in, and press the **Auto-reply off** button in the top bar.
+It turns green and says **Auto-reply on**.
 
-That proves the whole chain — WhatsApp → Evolution GO → webhook → engine —
-without a single message reaching a customer.
+That switch is stored in the database, so it survives redeploys and you do not
+need to touch Vercel. (You can also set `BOT_ENABLED=true` in Vercel, but the
+button is the easier control.)
 
-Read a day's worth of drafts. When you are happy, flip the **Auto-reply**
-button in the top bar (or set `BOT_ENABLED=true`). From that moment it replies
-for real.
+Now message the FSP number from your phone again. This time you get a real
+reply.
+
+### Turning it off in a hurry
+
+Press the same button. It stops sending immediately — messages keep arriving and
+leads keep appearing, just no replies.
 
 ---
 
-## Optional: ask the server to drop groups too
+## What it will and will not say
 
-The bot already refuses to reply in group chats, and there is a test that fails
-the build if that ever stops being true. If you want Evolution GO to not even
-deliver group messages:
+Already enforced, with tests that fail the build if they break:
+
+- **Never replies in a group.** Group, broadcast, status and channel messages
+  are dropped before anything else runs.
+- **Never sends money details.** No fee, price, discount, EMI, UPI, bank
+  account, IFSC, QR or payment link, and it never confirms a payment. Every
+  money question gets the handover: *"I'll connect with our team and the team
+  will get back to you shortly."*
+
+Optional extra — have Evolution GO itself refuse to even deliver group messages:
 
 ```bash
 npm run connect -- groups-off
 ```
 
-Belt and braces. It also stops status/story updates being delivered.
-
 ---
 
 ## Troubleshooting
 
-**Build fails on Railway.** Check the build log for the `npm run build` step.
-The same command works locally, so a failure there is usually a missing
-environment variable at build time — but none are required to build.
+**`npm run db:migrate` says cannot connect.** The `DATABASE_URL` is wrong.
+Re-copy it from Neon with pooling ON. It must contain `-pooler` and end with
+`?sslmode=require`.
 
-**Deploy is healthy but nothing arrives.** Run `npm run connect`. If the
-webhook is empty or points elsewhere, re-register it (step 6). Confirm the
-Railway domain is generated and public.
+**Vercel build fails.** Open the failed deployment's **Build Logs**. If it is a
+missing variable, add it under Settings → Environment Variables and **Redeploy**
+(adding a variable does not redeploy by itself).
+
+**Settings shows "Neon down" on Vercel but works locally.** `DATABASE_URL` is
+missing or mistyped in Vercel. Fix it, then Redeploy.
+
+**You send a WhatsApp message and no card appears.**
+1. `npm run connect` — is the webhook pointing at your Vercel URL?
+2. Settings → **Last webhook event**. If it says "nothing yet", Evolution GO is
+   not reaching Vercel. Re-register (step 4.1).
+3. Vercel → your project → **Logs**, then message again and watch for the
+   request to `/api/webhook/evolution`. A 401 there means `WEBHOOK_TOKEN` in
+   Vercel does not match the one in the registered URL — re-register.
 
 **Signed out after every deploy.** `SESSION_SECRET` is changing. Set it as a
-fixed variable rather than regenerating it.
+fixed value in Vercel.
 
-**Leads disappeared after a deploy.** The `/data` volume is missing or the
-mount path is wrong. Check step 3.
+**Leads vanished.** Check `DATABASE_URL` still points at the same Neon project.
+Neon free projects suspend when idle but do not lose data — the first request
+after idling is just a little slow.
 
-**Webhook arrives but the reply is not what you expected.** Settings → *Test
-the bot* replays any message through the real engine and names the matched
-answer and the trigger, sending nothing.
+**A reply was not what you expected.** Settings → **Test the bot**. It replays
+any message through the real engine and tells you which answer matched and which
+handover trigger fired, sending nothing.
 
 ---
 
-## A note on testing
+## Testing safely, from now on
 
-Never feed test payloads to the webhook while auto-reply is on — the bot will
-really message whatever number is in the payload. For that, the endpoint takes
-a dry-run flag that runs the full pipeline and sends nothing:
+Never POST test payloads at the webhook while auto-reply is on — the bot will
+really message whatever number is in the payload. Use either:
 
-```
-POST /api/webhook/evolution?token=<WEBHOOK_TOKEN>&dry=1
-```
+- **Settings → Test the bot** — touches neither WhatsApp nor the database; or
+- `&dry=1` on the webhook URL — runs the full pipeline and sends nothing.
 
-Safer still, use **Settings → Test the bot**, which never touches WhatsApp or
-the database.
+For a genuine end-to-end test, message the FSP number from your own phone. Never
+use made-up numbers; they can belong to real people.

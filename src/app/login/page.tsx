@@ -9,7 +9,7 @@ export default async function LoginPage() {
   if (user) redirect('/leads');
   return (
     <main className="center">
-      <LoginForm needsBootstrap={countUsers() === 0} />
+      <LoginForm needsBootstrap={(await countUsers()) === 0} />
     </main>
   );
 }

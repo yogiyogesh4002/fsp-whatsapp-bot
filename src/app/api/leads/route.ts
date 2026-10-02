@@ -47,7 +47,7 @@ export async function GET(req: Request) {
     const where: string[] = [];
     const params: (string | number)[] = [];
     if (q) {
-      where.push('(l.name LIKE ? OR l.push_name LIKE ? OR l.phone LIKE ? OR l.city LIKE ?)');
+      where.push('(l.name ILIKE ? OR l.push_name ILIKE ? OR l.phone ILIKE ? OR l.city ILIKE ?)');
       const like = `%${q}%`;
       params.push(like, like, like, like);
     }
@@ -72,25 +72,30 @@ export async function GET(req: Request) {
         l.stop_replying, l.unread, l.msg_count, l.last_message_at, l.first_seen_at,
         l.owner_user_id,
         u.name AS owner_name,
-        (SELECT COUNT(*) FROM escalations e WHERE e.lead_id = l.id AND e.resolved = 0) AS open_escalations,
+        (SELECT COUNT(*)::int FROM escalations e WHERE e.lead_id = l.id AND e.resolved = 0) AS open_escalations,
         (SELECT e2.trigger_no FROM escalations e2 WHERE e2.lead_id = l.id ORDER BY e2.id DESC LIMIT 1) AS last_trigger,
         (SELECT e3.topic FROM escalations e3 WHERE e3.lead_id = l.id ORDER BY e3.id DESC LIMIT 1) AS last_topic,
         (SELECT m.body FROM messages m WHERE m.lead_id = l.id AND m.direction = 'in' ORDER BY m.id DESC LIMIT 1) AS last_inbound,
-        (SELECT COUNT(*) FROM notes n WHERE n.lead_id = l.id) AS note_count
+        (SELECT COUNT(*)::int FROM notes n WHERE n.lead_id = l.id) AS note_count
       FROM leads l
       LEFT JOIN users u ON u.id = l.owner_user_id
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY l.priority DESC, l.board_order ASC, l.last_message_at DESC
+      ORDER BY l.priority DESC, l.board_order ASC, l.last_message_at DESC NULLS LAST
     `;
 
-    const rows = all<Omit<BoardLead, 'display'>>(sql, ...params);
+    const rows = await all<Omit<BoardLead, 'display'>>(sql, ...params);
     const leads: BoardLead[] = rows.map((r) => ({
       ...r,
       display: r.name || r.push_name || `+${r.phone}`,
     }));
 
-    const counts = all<{ stage: string; n: number }>('SELECT stage, COUNT(*) AS n FROM leads GROUP BY stage');
-    const openEscalations = get<{ n: number }>('SELECT COUNT(*) AS n FROM escalations WHERE resolved = 0')?.n ?? 0;
+    const counts = await all<{ stage: string; n: number }>(
+      'SELECT stage, COUNT(*)::int AS n FROM leads GROUP BY stage',
+    );
+    const openRow = await get<{ n: number }>(
+      'SELECT COUNT(*)::int AS n FROM escalations WHERE resolved = 0',
+    );
+    const openEscalations = Number(openRow?.n ?? 0);
 
     return { leads, counts, openEscalations };
   });

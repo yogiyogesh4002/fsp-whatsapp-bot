@@ -6,8 +6,8 @@ from [`WHATSAPP-BOT-KNOWLEDGE.md`](WHATSAPP-BOT-KNOWLEDGE.md), and hands anythin
 not answer to a human.
 
 **Business site:** https://fsp-beta.vercel.app/
-**Deploying it:** see [DEPLOY.md](DEPLOY.md) — the bot needs a public URL, because
-Evolution GO is the thing that calls it.
+**Deploying it:** see [DEPLOY.md](DEPLOY.md) — step by step through Neon, GitHub and
+Vercel. The bot needs a public URL, because Evolution GO is the thing that calls it.
 
 ---
 
@@ -67,18 +67,25 @@ becomes trigger 13 — hand over.
 
 ## Setup
 
-Requires **Node 24+** (the database uses Node's built-in `node:sqlite`, so there is nothing
-to compile).
+Requires **Node 24+** and a **Neon Postgres** database (the connection string goes in
+`DATABASE_URL`). Vercel has no persistent disk, so leads and accounts live in Neon.
 
 ### 1. Fill in `.env.local`
 
 A `.env.local` was created for you with `WEBHOOK_TOKEN` and `SESSION_SECRET` already
-generated. Add your Evolution details:
+generated. Add your Neon connection string and your Evolution details:
 
 ```ini
 EVOLUTION_API_URL=http://localhost:8080   # your Evolution server, no trailing slash
 EVOLUTION_API_KEY=                        # the AUTHENTICATION_API_KEY of that server
 EVOLUTION_INSTANCE=fsp                    # the instance holding the FSP number
+DATABASE_URL=postgresql://...              # your Neon POOLED connection string
+```
+
+Then create the tables:
+
+```bash
+npm run db:migrate
 ```
 
 Everything else has a working default. See [`.env.example`](.env.example) for the full list
@@ -277,8 +284,15 @@ which rule fired.
 
 ## Data
 
-Everything is in one SQLite file, `data/fsp.db` — leads, messages, escalations, notes and
-the audit log. Back it up by copying the file (stop the app first, or copy the `.db`, `.db-wal`
-and `.db-shm` together). It is gitignored.
+Everything lives in Neon Postgres — leads, messages, escalations, notes and the audit log,
+across eight tables. `npm run db:migrate` creates them; the app also creates them lazily on
+first use, so a fresh deploy works without running anything by hand.
+
+Neon keeps automatic point-in-time backups on its paid tiers; on the free tier, take your own
+dump before anything risky:
+
+```bash
+pg_dump "$DATABASE_URL" > fsp-backup.sql
+```
 
 Deleting a lead from the dashboard deletes its whole conversation. Only admins can do it.

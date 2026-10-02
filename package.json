@@ -9,11 +9,13 @@
     "start": "next start -p 3100",
     "lint": "next lint",
     "user": "node scripts/create-user.mjs",
-    "connect": "node scripts/setup-evolution.mjs",
     "qr": "node scripts/setup-evolution.mjs qr",
-    "test:bot": "tsc -p tsconfig.test.json && node --test scripts/engine.test.cjs"
+    "test:bot": "tsc -p tsconfig.test.json && node --test scripts/engine.test.cjs",
+    "db:migrate": "node scripts/migrate.mjs",
+    "connect": "node scripts/setup-evolution.mjs"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.2.0",
     "next": "16.3.8",
     "react": "19.3.0",
     "react-dom": "19.3.0"

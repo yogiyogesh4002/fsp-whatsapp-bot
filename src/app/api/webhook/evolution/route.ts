@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { parseInbound, parseConnectionEvent } from '@/lib/evolution';
 import { handleInbound } from '@/lib/handler';
-import { putSetting, run } from '@/lib/db';
+import { putSetting } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -44,18 +44,19 @@ export async function POST(req: Request) {
 
   // Keep the newest raw payload. The first real message confirms the exact
   // shape this Evolution build sends, which Settings surfaces for diagnosis.
-  putSetting('last_webhook_payload', JSON.stringify(payload).slice(0, 4000));
-  putSetting('last_webhook_at', new Date().toISOString());
-  putSetting('last_webhook_event', event || '(none)');
+  await Promise.all([
+    putSetting('last_webhook_payload', JSON.stringify(payload).slice(0, 4000)),
+    putSetting('last_webhook_at', new Date().toISOString()),
+    putSetting('last_webhook_event', event || '(none)'),
+  ]);
 
   // Connection breadcrumbs, so the dashboard can show the live state.
   const connection = parseConnectionEvent(payload);
   if (connection) {
-    putSetting('evolution_state', connection);
-    run(
-      `INSERT INTO settings (key, value) VALUES ('evolution_state_at', datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    );
+    await Promise.all([
+      putSetting('evolution_state', connection),
+      putSetting('evolution_state_at', new Date().toISOString()),
+    ]);
     return NextResponse.json({ ok: true, event, state: connection });
   }
 

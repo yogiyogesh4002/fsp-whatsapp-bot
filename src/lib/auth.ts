@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { cookies } from 'next/headers';
-import { get, run, logActivity } from './db';
+import { get, run, insert, logActivity } from './db';
 
 export const COOKIE = 'fsp_session';
 const MAX_AGE_SECONDS = 60 * 60 * 24 * 14; // two weeks
@@ -95,7 +95,7 @@ export async function currentUser(): Promise<User | null> {
   const jar = await cookies();
   const uid = readToken(jar.get(COOKIE)?.value);
   if (!uid) return null;
-  const user = get<User>(
+  const user = await get<User>(
     'SELECT id, email, name, role, active FROM users WHERE id = ? AND active = 1',
     uid,
   );
@@ -125,42 +125,42 @@ export async function requireAdmin(): Promise<User> {
 
 /* ── user management ──────────────────────────────────────── */
 
-export function createUser(input: {
+export async function createUser(input: {
   email: string;
   name: string;
   password: string;
   role?: Role;
-}): User {
+}): Promise<User> {
   const email = input.email.trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error('Enter a valid email address');
   if (input.password.length < 8) throw new Error('Password must be at least 8 characters');
   if (!input.name.trim()) throw new Error('Name is required');
-  const existing = get<{ id: number }>('SELECT id FROM users WHERE email = ?', email);
+  const existing = await get<{ id: number }>('SELECT id FROM users WHERE email = ?', email);
   if (existing) throw new Error('That email already has an account');
 
-  const res = run(
-    'INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, ?)',
+  const id = await insert(
+    'INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, ?) RETURNING id',
     email,
     input.name.trim(),
     hashPassword(input.password),
     input.role ?? 'agent',
   );
-  const id = Number(res.lastInsertRowid);
-  logActivity(null, id, 'user.created', `${email} as ${input.role ?? 'agent'}`);
+  await logActivity(null, id, 'user.created', `${email} as ${input.role ?? 'agent'}`);
   return { id, email, name: input.name.trim(), role: input.role ?? 'agent', active: 1 };
 }
 
-export function countUsers(): number {
-  return get<{ n: number }>('SELECT COUNT(*) AS n FROM users')?.n ?? 0;
+export async function countUsers(): Promise<number> {
+  const row = await get<{ n: number | string }>('SELECT COUNT(*) AS n FROM users');
+  return Number(row?.n ?? 0);
 }
 
-export function authenticate(email: string, password: string): User | null {
-  const row = get<User & { password_hash: string }>(
+export async function authenticate(email: string, password: string): Promise<User | null> {
+  const row = await get<User & { password_hash: string }>(
     'SELECT id, email, name, role, active, password_hash FROM users WHERE email = ?',
     email.trim().toLowerCase(),
   );
   if (!row || !row.active) return null;
   if (!verifyPassword(password, row.password_hash)) return null;
-  run("UPDATE users SET last_login_at = datetime('now') WHERE id = ?", row.id);
+  await run('UPDATE users SET last_login_at = now() WHERE id = ?', row.id);
   return { id: row.id, email: row.email, name: row.name, role: row.role, active: row.active };
 }
