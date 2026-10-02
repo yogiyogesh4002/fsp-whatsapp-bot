@@ -1,0 +1,30 @@
+{
+  "name": "fsp-whatsapp-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FSP WhatsApp Sales Assistant (Jarvis) — Evolution API bot + lead Kanban board",
+  "scripts": {
+    "dev": "next dev -p 3100",
+    "build": "next build",
+    "start": "next start -p 3100",
+    "lint": "next lint",
+    "user": "node scripts/create-user.mjs",
+    "connect": "node scripts/setup-evolution.mjs",
+    "qr": "node scripts/setup-evolution.mjs qr",
+    "test:bot": "tsc -p tsconfig.test.json && node --test scripts/engine.test.cjs"
+  },
+  "dependencies": {
+    "next": "16.3.8",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
