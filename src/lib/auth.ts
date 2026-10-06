@@ -92,14 +92,22 @@ export const cookieOptions = {
 /* ── session lookup ───────────────────────────────────────── */
 
 export async function currentUser(): Promise<User | null> {
-  const jar = await cookies();
-  const uid = readToken(jar.get(COOKIE)?.value);
-  if (!uid) return null;
-  const user = await get<User>(
-    'SELECT id, email, name, role, active FROM users WHERE id = ? AND active = 1',
-    uid,
-  );
-  return user ?? null;
+  // Never throw out of here: it runs during page render, and a missing
+  // DATABASE_URL or SESSION_SECRET would turn every page into a blank 500
+  // instead of the setup message the person needs to see.
+  try {
+    const jar = await cookies();
+    const uid = readToken(jar.get(COOKIE)?.value);
+    if (!uid) return null;
+    const user = await get<User>(
+      'SELECT id, email, name, role, active FROM users WHERE id = ? AND active = 1',
+      uid,
+    );
+    return user ?? null;
+  } catch (e) {
+    console.error('[auth] currentUser failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
 }
 
 /** For API routes: returns the user or throws a 401-shaped error. */

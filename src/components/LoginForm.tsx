@@ -3,7 +3,13 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-export default function LoginForm({ needsBootstrap }: { needsBootstrap: boolean }) {
+export default function LoginForm({
+  needsBootstrap,
+  setupError = null,
+}: {
+  needsBootstrap: boolean;
+  setupError?: string | null;
+}) {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
@@ -29,6 +35,28 @@ export default function LoginForm({ needsBootstrap }: { needsBootstrap: boolean 
       setError(err instanceof Error ? err.message : 'Could not sign in');
       setBusy(false);
     }
+  }
+
+  // The database is unreachable, so there is nothing to sign in to yet.
+  if (setupError) {
+    return (
+      <div className="card-form">
+        <h1>Setup needed</h1>
+        <p className="hint">The app is running, but it cannot reach its database.</p>
+        <div className="notice err" style={{ wordBreak: 'break-word' }}>
+          {setupError}
+        </div>
+        <p className="hint" style={{ marginTop: 14 }}>
+          In Vercel, open <strong>Settings → Environment Variables</strong> and check{' '}
+          <code>DATABASE_URL</code> holds your <strong>pooled</strong> Neon connection string
+          (the host contains <code>-pooler</code> and it ends with <code>?sslmode=require</code>).
+          Then <strong>Redeploy</strong> — adding a variable does not redeploy on its own.
+        </p>
+        <p className="hint">
+          <a href="/api/health">Open /api/health</a> for a full checklist of what is missing.
+        </p>
+      </div>
+    );
   }
 
   return (
