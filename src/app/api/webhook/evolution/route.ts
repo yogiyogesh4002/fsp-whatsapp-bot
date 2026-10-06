@@ -5,6 +5,10 @@ import { putSetting } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+// Evolution GO retries on a non-2xx, so give the pipeline room on a cold start.
+// Set here rather than in vercel.json: the framework-native form needs no plan
+// features and cannot fail on a path pattern that does not match.
+export const maxDuration = 30;
 
 /**
  * Evolution API webhook receiver.
