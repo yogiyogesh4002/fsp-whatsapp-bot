@@ -12,3 +12,6 @@ data/*.db-shm
 next-env.d.ts
 tsconfig.tsbuildinfo
 .test-build/
+
+# Paste-ready Vercel env (contains real secrets)
+vercel-env.txt
